@@ -1,122 +1,86 @@
-import pandas as pd
-
+import os
+from openpyxl import load_workbook
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
 
+TOKEN = os.getenv("BOT_TOKEN")
+EXCEL_FILE = "warehouse.xlsx"
 
-# ========== НАСТРОЙКИ ==========
-TOKEN = "8533815960:AAEZ3J9VrPvtlOHSsN9sw6m2J5_j8AnsyhU"   # <-- вставь сюда свой токен
-FILE_PATH = "warehouse.xlsx"      # файл должен лежать рядом с agent.py
-
-REQUIRED_COLUMNS = {
-    "PartNumber",
-    "Quantity",
-    "Shelf",
-    "Location",
-    "Passport",
-    "Category",
-    "SerialNumber",
-    "Check",
-}
-# ===============================
-
-
-def normalize_text(v) -> str:
-    if pd.isna(v):
+def normalize(text):
+    if text is None:
         return ""
-    return str(v).strip()
+    return str(text).lower().replace(" ", "").replace("-", "")
 
+def yes_no(value):
+    v = normalize(value)
+    return "да" if v in ("yes", "y", "true", "1", "да") else "нет"
 
-def to_yes(v: str) -> bool:
-    v = normalize_text(v).lower()
-    return v in {"yes", "y", "true", "1", "да", "ok", "checked"}
+def load_items():
+    wb = load_workbook(EXCEL_FILE, data_only=True)
+    ws = wb.active
+    items = []
 
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row[0]:
+            continue
+
+        items.append({
+            "number": row[0],
+            "quantity": row[1],
+            "shelf": row[2],
+            "location": row[3],
+            "passport": row[4],
+            "category": row[5],
+            "serial": row[6],
+            "check": row[8] if len(row) > 8 else None
+        })
+
+    return items
+
+def find_items(query, items):
+    q = normalize(query)
+    results = []
+
+    for item in items:
+        if q in normalize(item["number"]) or q in normalize(item["serial"]):
+            results.append(item)
+
+    return results
+
+def format_item(item):
+    return (
+        f"✅ {item['number']} есть в наличии\n"
+        f"📦 Полка: {item['shelf']} | Ячейка: {item['location']}\n"
+        f"🔢 Количество: {item['quantity']}\n"
+        f"📄 Паспорт: {'есть' if yes_no(item['passport']) == 'да' else 'нет'}\n"
+        f"🆕 Категория: {item['category']}\n"
+        f"🔑 Серийный номер: {item['serial']}\n"
+        f"✔️ Проверка: {yes_no(item['check'])}"
+    )
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привет 👋\n"
+        "Напиши номер детали или серийный номер — я проверю склад."
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = (update.message.text or "").strip()
-    if not query:
+    text = update.message.text.strip()
+    items = load_items()
+    found = find_items(text, items)
+
+    if not found:
+        await update.message.reply_text("❌ Не найдено")
         return
 
-    try:
-        df = pd.read_excel(FILE_PATH)
-        df.columns = [str(c).strip() for c in df.columns]
-
-        # Проверка колонок
-        if not REQUIRED_COLUMNS.issubset(set(df.columns)):
-            missing = sorted(list(REQUIRED_COLUMNS - set(df.columns)))
-            await update.message.reply_text(
-                "❌ Ошибка: в Excel не хватает колонок:\n" + ", ".join(missing)
-            )
-            return
-
-        # Поиск по PartNumber
-        df["PartNumber"] = df["PartNumber"].astype(str)
-        matches = df[df["PartNumber"].str.lower().str.contains(query.lower(), na=False)]
-
-        if matches.empty:
-            await update.message.reply_text("❓ Такой запчасти нет в таблице")
-            return
-
-        responses = []
-
-        for _, row in matches.iterrows():
-            part = normalize_text(row["PartNumber"])
-
-            # Quantity
-            try:
-                qty = int(float(row["Quantity"])) if not pd.isna(row["Quantity"]) else 0
-            except Exception:
-                qty = 0
-
-            shelf = normalize_text(row["Shelf"])
-            location = normalize_text(row["Location"])
-
-            # Passport: yes/no -> есть/нет
-            passport = "есть" if to_yes(row["Passport"]) else "нет"
-
-            # Category: new/old -> новая/старая
-            cat_raw = normalize_text(row["Category"]).lower()
-            category = "новая" if cat_raw == "new" else "старая"
-
-            # SerialNumber
-            serial = normalize_text(row["SerialNumber"])
-            if serial == "":
-                serial = "—"
-
-            # Check: yes -> проверена, иначе не проверена
-            checked = "проверена" if to_yes(row["Check"]) else "не проверена"
-
-            if qty > 0:
-                responses.append(
-                    f"✅ {part} есть в наличии\n"
-                    f"📦 Полка: {shelf}, ячейка: {location}\n"
-                    f"🔢 Количество: {qty}\n"
-                    f"📄 Паспорт: {passport}\n"
-                    f"🆕 Категория: {category}\n"
-                    f"🔑 Серийный номер: {serial}\n"
-                    f"✔️ Проверка: {checked}"
-                )
-            else:
-                responses.append(
-                    f"❌ {part} нет в наличии\n"
-                    f"📄 Паспорт: {passport}\n"
-                    f"🆕 Категория: {category}\n"
-                    f"🔑 Серийный номер: {serial}\n"
-                    f"✔️ Проверка: {checked}"
-                )
-
-        await update.message.reply_text("\n\n".join(responses))
-
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка: {e}")
-
+    reply = "\n\n".join(format_item(item) for item in found)
+    await update.message.reply_text(reply)
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🤖 Avacs Stock Bot запущен")
-    app.run_polling(drop_pending_updates=True)
-
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
