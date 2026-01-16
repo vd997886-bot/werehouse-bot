@@ -3,7 +3,7 @@ from openpyxl import load_workbook
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv(8551566060:AAFWo6JAdDoNqlkEq26CCxU1_OUO3oLE1Ac)
 EXCEL_FILE = "warehouse.xlsx"
 
 def normalize(text):
